@@ -1,0 +1,109 @@
+# 多传感器标定配置文件
+
+# 传感器配置
+sensors:
+  # 6个相机配置
+  cameras:
+    - name: "front"          # 前视相机
+      id: 0
+      image_width: 1280
+      image_height: 720
+    - name: "front_left"     # 左前相机
+      id: 1
+      image_width: 1280
+      image_height: 720
+    - name: "front_right"    # 右前相机
+      id: 2
+      image_width: 1280
+      image_height: 720
+    - name: "rear_left"      # 左后相机
+      id: 3
+      image_width: 1280
+      image_height: 720
+    - name: "rear_right"     # 右后相机
+      id: 4
+      image_width: 1280
+      image_height: 720
+    - name: "rear"           # 后视相机
+      id: 5
+      image_width: 1280
+      image_height: 720
+  
+  # LiDAR配置
+  lidar:
+    name: "main_lidar"
+    type: "velodyne64"  # 或 velodyne32, ouster等
+    max_range: 120.0  # 最大探测距离（米）
+    min_range: 0.5   # 最小探测距离（米）
+    
+  # IMU配置
+  imu:
+    name: "main_imu"
+    frequency: 200  # 采样频率（Hz）
+
+# 棋盘格标定板参数（用于相机内参标定）
+checkerboard:
+  # 内角点数量 (角点数 = 方块数 - 1)
+  inner_corners: [9, 6]  # [columns, rows]
+  # 方块实际尺寸 (单位：米)
+  square_size: 0.02  # 20mm
+  
+# 多相机外参标定参数
+multi_camera:
+  # 参考相机（其他相机相对于此相机的外参）
+  reference_camera: "front"
+  # 是否进行全局优化
+  global_optimization: true
+  
+# IMU-相机标定参数
+imu_camera:
+  # 使用AprilTag进行标定
+  apriltag:
+    family: "tag36h11"
+    tag_size: 0.16
+  # IMU参数
+  imu:
+    # 是否使用静止时间段进行零偏估计
+    estimate_bias: true
+    # 静止检测阈值 (m/s²)
+    static_threshold: 0.1
+    # 采样窗口大小
+    window_size: 100
+  
+# 路径配置
+paths:
+  # 数据目录
+  data_dir: "data"
+  # 各相机的标定图像目录
+  camera_images_dir: "data/camera_images"
+  # 各相机子目录：front, front_left, front_right, rear_left, rear_right, rear
+  # LiDAR点云目录
+  lidar_points_dir: "data/lidar_points"
+  # IMU数据目录
+  imu_data_dir: "data/imu_data"
+  # 标定结果输出目录
+  calibration_results_dir: "data/calibration_results"
+  # 标定板图像目录
+  calibration_patterns_dir: "calibration_patterns"
+  
+# 标定选项
+calibration:
+  # 是否显示调试信息
+  verbose: true
+  # 是否保存可视化结果
+  save_visualization: true
+  # 重投影误差阈值 (像素)
+  reprojection_error_threshold: 0.5
+  # 最小图像数量
+  min_images: 10
+  # 最大迭代次数
+  max_iterations: 100
+  
+# 输出选项
+output:
+  # 保存格式
+  save_format: "npy"  # npy, yaml, txt
+  # 是否保存详细报告
+  save_report: true
+  # 是否保存可视化图像
+  save_plots: true
