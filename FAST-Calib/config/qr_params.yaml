@@ -1,0 +1,71 @@
+# FAST-Calib ROS 2 configuration
+# Note: $(find ...) is not supported in ROS 2 YAML — use absolute paths.
+
+fast_calib:
+  ros__parameters:
+    # Camera intrinsics (Ruby 128 + your camera)
+    fx: 2478.48702288166
+    fy: 2478.58544825456
+    cx: 1230.99707596681
+    cy: 1025.66149498072
+    k1: -0.0493178189623200
+    k2: 0.147394487986097
+    p1: -0.00127118592043482
+    p2: -0.00200379689523022
+
+    # Calibration target parameters
+    marker_size: 0.20
+    delta_width_qr_center: 0.55
+    delta_height_qr_center: 0.35
+    delta_width_circles: 0.5
+    delta_height_circles: 0.4
+    circle_radius: 0.12
+
+    # Distance filter (adjust per scene)
+    x_min: 2.0
+    x_max: 5.0
+    y_min: -1.0
+    y_max: 4.0
+    z_min: 0.0
+    z_max: 2.0
+
+    # Input — ROS 2 bag directory path (not a .bag file)
+    lidar_topic: "/rslidar_points"
+    image_topic: "/camera/image_raw"
+    bag_path: "/home/asd/calib_data/scene_1"
+    image_path: ""
+
+    # Output
+    output_path: "/home/asd/calib_data/output"
+
+# For multi_fast_calib node (same params, different node name)
+multi_fast_calib:
+  ros__parameters:
+    fx: 2478.48702288166
+    fy: 2478.58544825456
+    cx: 1230.99707596681
+    cy: 1025.66149498072
+    k1: -0.0493178189623200
+    k2: 0.147394487986097
+    p1: -0.00127118592043482
+    p2: -0.00200379689523022
+
+    marker_size: 0.20
+    delta_width_qr_center: 0.55
+    delta_height_qr_center: 0.35
+    delta_width_circles: 0.5
+    delta_height_circles: 0.4
+    circle_radius: 0.12
+
+    x_min: 2.0
+    x_max: 5.0
+    y_min: -1.0
+    y_max: 4.0
+    z_min: 0.0
+    z_max: 2.0
+
+    lidar_topic: "/rslidar_points"
+    image_topic: "/camera/image_raw"
+    bag_path: ""
+    image_path: ""
+    output_path: "/home/asd/calib_data/output"
