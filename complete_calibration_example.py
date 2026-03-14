@@ -83,8 +83,8 @@ def step2_calibrate_lidar_to_camera(multi_calibrator: MultiCameraCalibration):
     print(f'  - {camera_image_dir} (相机图像)')
     print('\n数据要求:')
     print('  - LiDAR点云和相机图像需要时间同步')
-    print('  - 场景中需要包含AprilTag标定板')
-    print('  - 推荐使用4x4 AprilTag网格，间距20cm\n')
+    print('  - 场景中需要包含棋盘格标定板（同时被 LiDAR 和相机观测）')
+    print('  - 推荐标定板尺寸 ≥ 100cm × 70cm\n')
     
     try:
         results = lidar_calibrator.calibrate(
@@ -198,7 +198,11 @@ def print_summary(multi_calibrator, lidar_calibrator, imu_calibrator):
         R, T = lidar_calibrator.R, lidar_calibrator.T
         error = lidar_calibrator.calibration_error
         roll, pitch, yaw = rotation_matrix_to_angles(R)
-        print(f'  标定误差: {error:.4f} 像素')
+        if isinstance(error, dict):
+            print(f'  帧间一致性: 旋转 std={error.get("rotation_std_deg", 0):.2f}°, '
+                  f'平移 std={error.get("translation_std_m", 0):.4f}m')
+        else:
+            print(f'  标定误差: {error}')
         print(f'  旋转矩阵: roll={np.degrees(roll):.2f}°, pitch={np.degrees(pitch):.2f}°, yaw={np.degrees(yaw):.2f}°')
         print(f'  平移向量: {T.ravel()}')
     
@@ -229,7 +233,7 @@ def main():
     print('  3. 标定IMU到相机的外参')
     print('\n传感器配置:')
     print('  - 6个相机: front, front_left, front_right, rear_left, rear_right, rear')
-    print('  - 1个LiDAR: Velodyne 64线')
+    print('  - 1个LiDAR: 速腾聚创 Ruby 128 线')
     print('  - 1个IMU: 高频惯性测量单元')
     print()
     

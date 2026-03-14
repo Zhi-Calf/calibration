@@ -14,6 +14,7 @@ import numpy as np
 import os
 from typing import List, Tuple, Optional, Dict
 from tqdm import tqdm
+from scipy.spatial.transform import Rotation as ScipyRotation
 from camera_calibration import CameraCalibration
 from calibration_utils import (
     load_config,
@@ -101,146 +102,129 @@ class MultiCameraCalibration:
     
     def calculate_extrinsics(self, base_dir: str) -> Dict[str, dict]:
         """
-        计算相机之间的外参（相对于参考相机）
-        
-        使用同一场景在不同相机中的观测，计算相机之间的相对位姿。
-        
-        Args:
-            base_dir: 相机图像的基础目录
-            
-        Returns:
-            所有相机的外参结果
+        计算相机之间的外参（相对于参考相机）。
+
+        对同一帧（按文件名排序对齐），分别在参考相机和目标相机中检测棋盘格，
+        通过 solvePnP 得到各自的 T_board_cam，再计算
+          T_ref_target = T_board_ref^{-1} @ T_board_target  (board 坐标系消掉)
+        对多帧结果做四元数球面平均得到最终外参。
         """
         print('\n' + '=' * 60)
         print('开始计算相机之间的外参')
         print('=' * 60)
-        
-        # 确保参考相机已标定
+
         if self.reference_camera not in self.intrinsics:
             raise ValueError(f'参考相机 {self.reference_camera} 未标定!')
-        
-        # 获取参考相机的棋盘格角点
+
         ref_calibrator = self.calibrators[self.reference_camera]
         ref_image_dir = os.path.join(base_dir, self.reference_camera)
-        ref_images = get_image_files(ref_image_dir)
-        
-        # 检测参考相机中的棋盘格
-        ref_object_points = []
-        ref_image_points = []
-        
-        for img_path in tqdm(ref_images, desc=f'检测参考相机 {self.reference_camera} 的角点'):
+        ref_images = sorted(get_image_files(ref_image_dir))
+
+        ref_detections = {}
+        for idx, img_path in enumerate(tqdm(ref_images, desc=f'检测参考相机 {self.reference_camera} 角点')):
             img = cv2.imread(img_path)
             if img is None:
                 continue
-            
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
             ret, corners = find_checkerboard_corners(gray, ref_calibrator.pattern_size)
-            
             if ret:
-                # 生成世界坐标点
                 objp = ref_calibrator._generate_object_points()
-                ref_object_points.append(objp)
-                ref_image_points.append(corners)
-        
-        # 计算参考相机的外参（相对于标定板）
-        ref_rvecs = []
-        ref_tvecs = []
-        for i in range(len(ref_object_points)):
-            ret, rvec, tvec = cv2.solvePnP(
-                ref_object_points[i], ref_image_points[i],
-                ref_calibrator.camera_matrix, ref_calibrator.dist_coeffs
-            )
-            ref_rvecs.append(rvec)
-            ref_tvecs.append(tvec)
-        
-        # 计算其他相机相对于参考相机的外参
+                success, rvec, tvec = cv2.solvePnP(
+                    objp, corners,
+                    ref_calibrator.camera_matrix, ref_calibrator.dist_coeffs
+                )
+                if success:
+                    R_ref, _ = cv2.Rodrigues(rvec)
+                    T_board_ref = np.eye(4)
+                    T_board_ref[:3, :3] = R_ref
+                    T_board_ref[:3, 3] = tvec.ravel()
+                    ref_detections[idx] = T_board_ref
+
         extrinsics_results = {}
-        
+
         for camera_cfg in self.cameras_config:
             camera_name = camera_cfg['name']
-            
+
             if camera_name == self.reference_camera:
-                # 参考相机的外参为单位矩阵和零向量
                 extrinsics_results[camera_name] = {
                     'R': np.eye(3),
                     'T': np.zeros((3, 1))
                 }
                 continue
-            
+
+            if camera_name not in self.intrinsics:
+                print(f'警告: 相机 {camera_name} 未标定内参, 跳过')
+                continue
+
             print(f'\n计算相机 {camera_name} 相对于 {self.reference_camera} 的外参')
-            
+
             calibrator = self.calibrators[camera_name]
             image_dir = os.path.join(base_dir, camera_name)
-            images = get_image_files(image_dir)
-            
-            # 收集匹配的外参对
-            R_pairs = []
-            T_pairs = []
-            
-            for img_path in tqdm(images, desc=f'处理相机 {camera_name}', leave=False):
-                # 检测当前相机的棋盘格
-                img = cv2.imread(img_path)
+            images = sorted(get_image_files(image_dir))
+
+            quats = []
+            translations = []
+            num_pairs = min(len(ref_images), len(images))
+
+            for idx in tqdm(range(num_pairs), desc=f'处理相机 {camera_name}', leave=False):
+                if idx not in ref_detections:
+                    continue
+
+                img = cv2.imread(images[idx])
                 if img is None:
                     continue
-                
+
                 gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
                 ret, corners = find_checkerboard_corners(gray, calibrator.pattern_size)
-                
                 if not ret:
                     continue
-                
-                # 计算当前相机的外参
+
                 objp = calibrator._generate_object_points()
-                ret, rvec, tvec = cv2.solvePnP(
+                success, rvec, tvec = cv2.solvePnP(
                     objp, corners,
                     calibrator.camera_matrix, calibrator.dist_coeffs
                 )
-                
-                if not ret:
+                if not success:
                     continue
-                
-                # 计算当前相机相对于参考相机的外参
-                # T_ref->cam = T_ref->board * T_board->cam^-1
-                # R_ref->cam = R_ref->board * R_board->cam^T
-                R_ref_board = cv2.Rodrigues(ref_rvecs[0])[0]  # 使用第一帧作为参考
-                T_ref_board = ref_tvecs[0]
-                
-                R_cam_board = cv2.Rodrigues(rvec)[0]
-                T_cam_board = tvec
-                
-                # 计算 R_ref->cam
-                R_ref_cam = R_ref_board @ R_cam_board.T
-                
-                # 计算 T_ref->cam
-                T_ref_cam = T_ref_board - R_ref_cam @ T_cam_board
-                
-                R_pairs.append(R_ref_cam)
-                T_pairs.append(T_ref_cam)
-            
-            if len(R_pairs) == 0:
-                print(f'警告: 未能找到相机 {camera_name} 的匹配图像')
+
+                R_tgt, _ = cv2.Rodrigues(rvec)
+                T_board_tgt = np.eye(4)
+                T_board_tgt[:3, :3] = R_tgt
+                T_board_tgt[:3, 3] = tvec.ravel()
+
+                T_board_ref = ref_detections[idx]
+                T_ref_tgt = np.linalg.inv(T_board_ref) @ T_board_tgt
+
+                r = ScipyRotation.from_matrix(T_ref_tgt[:3, :3])
+                quats.append(r.as_quat())
+                translations.append(T_ref_tgt[:3, 3])
+
+            if len(quats) == 0:
+                print(f'警告: 未能找到相机 {camera_name} 的匹配帧')
                 continue
-            
-            # 平均多帧的外参
-            R_avg = np.mean(R_pairs, axis=0)
-            T_avg = np.mean(T_pairs, axis=0)
-            
-            # 对旋转矩阵进行正交化
-            U, _, Vt = np.linalg.svd(R_avg)
-            R_avg = U @ Vt
-            
-            # 提取欧拉角
+
+            quats = np.array(quats)
+            ref_q = quats[0]
+            for j in range(1, len(quats)):
+                if np.dot(quats[j], ref_q) < 0:
+                    quats[j] = -quats[j]
+            avg_quat = np.mean(quats, axis=0)
+            avg_quat /= np.linalg.norm(avg_quat)
+            R_avg = ScipyRotation.from_quat(avg_quat).as_matrix()
+
+            T_avg = np.mean(translations, axis=0).reshape(3, 1)
+
             roll, pitch, yaw = rotation_matrix_to_angles(R_avg)
-            
             extrinsics_results[camera_name] = {
                 'R': R_avg,
                 'T': T_avg
             }
-            
-            print(f'相机 {camera_name} 外参计算完成')
-            print(f'旋转矩阵 (欧拉角): roll={np.degrees(roll):.2f}°, pitch={np.degrees(pitch):.2f}°, yaw={np.degrees(yaw):.2f}°')
+
+            print(f'相机 {camera_name} 外参计算完成 (使用 {len(quats)} 对匹配帧)')
+            print(f'旋转 (欧拉角): roll={np.degrees(roll):.2f}°, '
+                  f'pitch={np.degrees(pitch):.2f}°, yaw={np.degrees(yaw):.2f}°')
             print(f'平移向量: {T_avg.ravel()}')
-        
+
         self.extrinsics = extrinsics_results
         return extrinsics_results
     
@@ -404,15 +388,15 @@ class MultiCameraCalibration:
         """
         if from_camera not in self.extrinsics or to_camera not in self.extrinsics:
             return None
-        
-        # 获取外参
-        R_from, T_from = self.extrinsics[from_camera]
-        R_to, T_to = self.extrinsics[to_camera]
-        
-        # 转换: P_to = R_to^T * (R_from * P_from + T_from - T_to)
-        point_from = point.reshape(3, 1)
-        point_to = R_to.T @ (R_from @ point_from + T_from - T_to)
-        
+
+        R_from = self.extrinsics[from_camera]['R']
+        T_from = self.extrinsics[from_camera]['T']
+        R_to = self.extrinsics[to_camera]['R']
+        T_to = self.extrinsics[to_camera]['T']
+
+        point_ref = R_from @ point.reshape(3, 1) + T_from
+        point_to = R_to.T @ (point_ref - T_to)
+
         return point_to.ravel()
 
 

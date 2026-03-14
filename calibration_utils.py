@@ -62,9 +62,20 @@ def save_calibration_results(results: dict, output_dir: str, prefix: str = ''):
     
     # 保存为YAML格式
     yaml_filename = os.path.join(output_dir, f'{prefix}results.yaml')
+
+    def _to_serializable(obj):
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, dict):
+            return {k: _to_serializable(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return [_to_serializable(v) for v in obj]
+        if isinstance(obj, (np.floating, np.integer)):
+            return float(obj) if isinstance(obj, np.floating) else int(obj)
+        return obj
+
     with open(yaml_filename, 'w') as f:
-        yaml.dump({k: v.tolist() if isinstance(v, np.ndarray) else v 
-                   for k, v in results.items()}, f)
+        yaml.dump(_to_serializable(results), f, default_flow_style=False)
     print(f'保存完整结果到 {yaml_filename}')
 
 
@@ -217,20 +228,22 @@ def compute_reprojection_error(object_points: List[np.ndarray],
     Returns:
         平均重投影误差（像素）
     """
-    total_error = 0
+    total_sq_error = 0.0
     total_points = 0
     
     for i in range(len(object_points)):
-        # 投影3D点到2D图像平面
         projected_points = project_points(object_points[i], rvecs[i], tvecs[i],
                                         camera_matrix, dist_coeffs)
         
-        # 计算误差
-        error = cv2.norm(image_points[i], projected_points, cv2.NORM_L2) / len(projected_points)
-        total_error += error
-        total_points += len(projected_points)
+        img_pts = image_points[i].reshape(-1, 2)
+        diff = img_pts - projected_points
+        sq_errors = np.sum(diff ** 2, axis=1)
+        total_sq_error += np.sum(sq_errors)
+        total_points += len(sq_errors)
     
-    return total_error / total_points
+    if total_points == 0:
+        return float('inf')
+    return np.sqrt(total_sq_error / total_points)
 
 
 def stereo_rectify(camera_matrix1: np.ndarray,
