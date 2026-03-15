@@ -38,15 +38,22 @@ calibration/
 ├── README.md
 ├── requirements.txt
 ├── config.yaml                    # 全局配置（含 lidar_camera 节）
+├── extract_bag_data.py            # 从 ROS 2 bag 提取标定数据（见下方「从 ROS 2 Bag 提取」）
+├── inspect_bag_image.py           # 查看 bag 内首帧图像编码与尺寸（调试用）
+├── test_rosbag2_wsl.sh            # WSL 下测试 rosbag2 解析（list-topics + 提取）
 ├── camera_calibration.py          # 单相机内参标定
 ├── multi_camera_calibration.py    # 多相机外参标定
 ├── lidar_camera_calibration.py    # LiDAR-相机外参标定
 ├── imu_camera_calibration.py      # IMU-相机外参标定
-├── calibration_utils.py           # 公共工具函数
+├── calibration_utils.py          # 公共工具函数
 ├── complete_calibration_example.py # 完整标定流程示例
 ├── test_camera_calibration.py     # 单相机标定测试
 ├── generate_high_res_patterns.py  # 高分辨率标定板生成
 ├── download_calibration_patterns.py # 在线标定板下载
+├── FAST-Calib/                   # LiDAR-相机精标定（ROS2 + 二维码/棋盘格，可选）
+│   ├── launch/calib.launch.py    # 单场景启动
+│   ├── config/qr_params.yaml      # bag 路径、图像/点云 topic
+│   └── scripts/distance_filter_tool.py  # 点云距离过滤（支持 rosbag2）
 └── data/                          # 数据与结果目录
     ├── camera_images/{front,front_left,...}/
     ├── lidar_points/
@@ -61,6 +68,39 @@ calibration/
 - **相机**：每个相机 20–30 张不同角度的棋盘格图片，放入 `data/camera_images/<camera_name>/`
 - **LiDAR-相机**：同步采集的 `.pcd`/`.ply` 点云和对应图片，按文件名排序后一一对应
 - **IMU-相机**：IMU CSV 数据（timestamp, ax, ay, az, gx, gy, gz）+ 对应图片
+
+#### 从 ROS 2 Bag 提取数据
+
+若数据在 ROS 2 bag（`.db3` / `.mcap`）中，先用 `extract_bag_data.py` 导出为上述目录结构。依赖：`pip install rosbags`（已列入 `requirements.txt`）。
+
+```bash
+# 查看 bag 内 topic 与类型
+python extract_bag_data.py /path/to/ros2_bag_dir --list-topics
+
+# 提取到默认目录 ./extracted_data（可 -o 指定）
+python extract_bag_data.py /path/to/ros2_bag_dir -o data
+
+# 仅提取相机（或 --only lidar / imu），并限制数量
+python extract_bag_data.py /path/to/ros2_bag_dir -o data --only camera --max-images 50
+```
+
+**自定义 topic 映射**（若与默认不同）：
+
+```bash
+python extract_bag_data.py /path/to/bag \\
+  --lidar-topic /rslidar_points \\
+  --camera-topics front=/cam0/image_raw front_left=/cam1/image_raw \\
+  --imu-topic /imu/data
+```
+
+**Windows + WSL**：bag 在 Windows 盘符（如 `D:\`）时，在 WSL 中使用 `/mnt/d/` 路径，例如：
+
+```bash
+python3 extract_bag_data.py /mnt/d/rosbag2_xxx --list-topics
+python3 extract_bag_data.py /mnt/d/rosbag2_xxx -o /tmp/extracted
+```
+
+脚本支持无内嵌类型定义的 ROS2 bag（自动使用 Humble 类型库）。图像编码支持：`bgr8`/`rgb8`/`mono8`/`yuv422_yuy2`/`rgba8`/`bayer_rggb8` 等，输出为标定脚本可用的图像与 PCD/IMU CSV。
 
 ### 2. 修改配置
 
@@ -124,4 +164,5 @@ python download_calibration_patterns.py
 
 - Zhang, Z. (2000). "A flexible new technique for camera calibration"
 - Olson, E. (2011). "AprilTag: A robust and flexible visual fiducial system"
-- FAST-Calib: https://github.com/hku-mars/FAST-Calib （推荐用于 LiDAR-Camera 精标定）
+- **FAST-Calib**：https://github.com/hku-mars/FAST-Calib — 本仓库内 `FAST-Calib/` 为 ROS2 移植版，支持从 rosbag2 读图与点云，用于 LiDAR-相机精标定（二维码或棋盘格）。
+- **rosbags**：Python 读写 ROS1/ROS2 bag，本流程使用其 Highlevel API（AnyReader）解析 rosbag2。

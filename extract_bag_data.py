@@ -4,33 +4,33 @@
 ROS 2 Bag Data Extractor for Calibration Pipeline
 
 Extracts sensor data from a ROS 2 bag (.db3 / .mcap) into the directory
-structure expected by the calibration scripts:
+structure expected by the calibration scripts (see calibration/README.md).
 
+Output layout:
     output_dir/
-    ├── camera_images/
-    │   ├── front/           # images from /camera_front/image_raw
-    │   ├── front_left/      # images from /camera_front_left/image_raw
-    │   └── ...
-    ├── lidar_points/
-    │   ├── 000000.pcd       # point clouds from /rslidar_points
-    │   └── ...
-    └── imu_data/
-        └── imu.csv          # IMU data from /imu/data
+    ├── camera_images/<camera_name>/
+    ├── lidar_points/        # merged or per-frame PCD
+    └── imu_data/imu.csv
 
 Usage:
     python extract_bag_data.py /path/to/ros2_bag [--output /path/to/output]
+    python extract_bag_data.py /path/to/ros2_bag --list-topics   # only list topics
 
-    # With custom topic mapping:
+    # Custom topic mapping:
     python extract_bag_data.py /path/to/ros2_bag \\
         --lidar-topic /rslidar_points \\
         --camera-topics front=/cam0/image_raw front_left=/cam1/image_raw \\
         --imu-topic /imu/data
 
-    # Extract only specific data types:
-    python extract_bag_data.py /path/to/ros2_bag --only lidar camera
+    # Extract only camera (or lidar / imu), limit counts:
+    python extract_bag_data.py /path/to/ros2_bag --only camera --max-images 50
 
-Dependencies:
-    pip install rosbags numpy open3d
+WSL (e.g. bag on D:\\): use path /mnt/d/... for the bag directory.
+
+Supported image encodings: bgr8, rgb8, mono8, yuv422_yuy2, rgba8, bayer_rggb8, 16UC1/mono16.
+Works with bags that have no embedded type definitions (uses ROS2 Humble typestore).
+
+Dependencies: pip install rosbags numpy open3d (see requirements.txt).
 """
 
 import argparse
@@ -42,11 +42,14 @@ from pathlib import Path
 import numpy as np
 
 try:
-    from rosbags.rosbag2 import Reader
-    from rosbags.serde import deserialize_cdr
+    from rosbags.highlevel import AnyReader
+    from rosbags.typesys import Stores, get_typestore
 except ImportError:
     print("ERROR: pip install rosbags", file=sys.stderr)
     sys.exit(1)
+
+# Default typestore for ROS2 bags without embedded message definitions (e.g. older ros2bag)
+_DEFAULT_TYPESTORE = get_typestore(Stores.ROS2_HUMBLE)
 
 
 # ---------------------------------------------------------------------------
@@ -143,36 +146,62 @@ def save_pcd_ascii(path, xyz, intensity=None):
 # Image helpers
 # ---------------------------------------------------------------------------
 
-def decode_image_msg(raw_data, msg_type):
-    """Decode a serialized image message to numpy BGR array."""
-    msg = deserialize_cdr(raw_data, msg_type)
+def decode_image_msg(reader, raw_data, msg_type):
+    """Decode a serialized image message to numpy BGR array (H,W) or (H,W,3)."""
+    import cv2
+    msg = reader.deserialize(raw_data, msg_type)
 
     if msg_type == 'sensor_msgs/msg/CompressedImage':
-        import cv2
         arr = np.frombuffer(bytes(msg.data), dtype=np.uint8)
         img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-        return img
+        return _image_for_imwrite(img)
 
     # sensor_msgs/msg/Image
-    import cv2
-    h, w = msg.height, msg.width
-    encoding = msg.encoding
+    h, w = int(msg.height), int(msg.width)
+    encoding = str(msg.encoding).strip().lower()
     raw = bytes(msg.data)
 
-    if encoding in ('bgr8', 'rgb8'):
+    if encoding in ('bgr8', 'rgb8', '8uc3'):
         img = np.frombuffer(raw, dtype=np.uint8).reshape(h, w, 3)
         if encoding == 'rgb8':
             img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-    elif encoding == 'mono8':
+    elif encoding in ('mono8', '8uc1'):
         img = np.frombuffer(raw, dtype=np.uint8).reshape(h, w)
-    elif encoding in ('16UC1', 'mono16'):
+    elif encoding in ('16uc1', 'mono16'):
         img = np.frombuffer(raw, dtype=np.uint16).reshape(h, w)
+        img = (img >> 8).astype(np.uint8)  # scale to 8-bit for imwrite
     elif encoding == 'bayer_rggb8':
         bayer = np.frombuffer(raw, dtype=np.uint8).reshape(h, w)
         img = cv2.cvtColor(bayer, cv2.COLOR_BayerRG2BGR)
+    elif encoding in ('yuv422_yuy2', 'yuy2'):
+        # YUY2: 2 bytes per pixel, (H, W, 2) for cv2.COLOR_YUV2BGR_YUY2
+        img = np.frombuffer(raw, dtype=np.uint8).reshape(h, w, 2)
+        img = cv2.cvtColor(img, cv2.COLOR_YUV2BGR_YUY2)
+    elif encoding in ('rgba8', '8uc4'):
+        img = np.frombuffer(raw, dtype=np.uint8).reshape(h, w, 4)
+        img = cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
     else:
-        img = np.frombuffer(raw, dtype=np.uint8).reshape(h, w, -1)
+        # unknown: try (h, w, -1); if channels not 1/3/4, convert to BGR
+        n = len(raw) // (h * w)
+        if n == 1:
+            img = np.frombuffer(raw, dtype=np.uint8).reshape(h, w)
+        else:
+            img = np.frombuffer(raw, dtype=np.uint8).reshape(h, w, n)
 
+    return _image_for_imwrite(img)
+
+
+def _image_for_imwrite(img):
+    """Ensure image is (H,W) or (H,W,3) or (H,W,4) for cv2.imwrite."""
+    import cv2
+    if img is None:
+        return None
+    if img.ndim == 3 and img.shape[2] == 2:
+        img = cv2.cvtColor(img[:, :, 0], cv2.COLOR_GRAY2BGR)
+    elif img.ndim == 3 and img.shape[2] not in (1, 3, 4):
+        img = img[:, :, :3].copy() if img.shape[2] >= 3 else cv2.cvtColor(img[:, :, 0], cv2.COLOR_GRAY2BGR)
+    if img.dtype == np.uint16:
+        img = (img >> 8).astype(np.uint8)
     return img
 
 
@@ -180,9 +209,9 @@ def decode_image_msg(raw_data, msg_type):
 # IMU helpers
 # ---------------------------------------------------------------------------
 
-def decode_imu_msg(raw_data, msg_type):
+def decode_imu_msg(reader, raw_data, msg_type):
     """Decode a serialized IMU message to dict."""
-    msg = deserialize_cdr(raw_data, msg_type)
+    msg = reader.deserialize(raw_data, msg_type)
     stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
     return {
         'timestamp': stamp,
@@ -201,13 +230,11 @@ def decode_imu_msg(raw_data, msg_type):
 
 def scan_bag_topics(bag_path):
     """Print all topics and types in a bag."""
-    with Reader(bag_path) as reader:
+    with AnyReader([Path(bag_path)], default_typestore=_DEFAULT_TYPESTORE) as reader:
         print(f"\nTopics in bag: {bag_path}")
-        print(f"{'Topic':<50} {'Type':<45} {'Count':>8}")
-        print("-" * 105)
+        print(f"{'Topic':<50} {'Type':<45}")
+        print("-" * 95)
         for conn in reader.connections:
-            count = sum(1 for c, _, _ in reader.messages() if c.topic == conn.topic)
-            # count is expensive; just show type
             print(f"{conn.topic:<50} {conn.msgtype:<45}")
 
 
@@ -268,7 +295,7 @@ def extract(bag_path, output_dir, lidar_topic, camera_topics, imu_topic,
         print(f"IMU topic:       {imu_topic}")
     print()
 
-    with Reader(bag_path) as reader:
+    with AnyReader([Path(bag_path)], default_typestore=_DEFAULT_TYPESTORE) as reader:
         for conn, timestamp, raw_data in reader.messages():
             topic = conn.topic
             msgtype = conn.msgtype
@@ -277,7 +304,7 @@ def extract(bag_path, output_dir, lidar_topic, camera_topics, imu_topic,
             if do_lidar and topic == lidar_topic and msgtype == 'sensor_msgs/msg/PointCloud2':
                 if lidar_count >= max_lidar and not lidar_accumulate:
                     continue
-                msg = deserialize_cdr(raw_data, msgtype)
+                msg = reader.deserialize(raw_data, msgtype)
                 pc = pc2_to_numpy(msg)
 
                 if lidar_accumulate:
@@ -300,7 +327,7 @@ def extract(bag_path, output_dir, lidar_topic, camera_topics, imu_topic,
                 if cam_counts[cam_name] >= max_images:
                     continue
                 try:
-                    img = decode_image_msg(raw_data, msgtype)
+                    img = decode_image_msg(reader, raw_data, msgtype)
                     if img is not None:
                         import cv2
                         idx = cam_counts[cam_name]
@@ -314,7 +341,7 @@ def extract(bag_path, output_dir, lidar_topic, camera_topics, imu_topic,
             # --- IMU ---
             if do_imu and topic == imu_topic and msgtype == 'sensor_msgs/msg/Imu':
                 try:
-                    row = decode_imu_msg(raw_data, msgtype)
+                    row = decode_imu_msg(reader, raw_data, msgtype)
                     imu_rows.append(row)
                 except Exception:
                     pass
@@ -418,7 +445,7 @@ Examples:
             camera_topics[name] = topic
     else:
         # Auto-detect image topics from bag
-        with Reader(args.bag_path) as reader:
+        with AnyReader([Path(args.bag_path)], default_typestore=_DEFAULT_TYPESTORE) as reader:
             for conn in reader.connections:
                 if conn.msgtype in ('sensor_msgs/msg/Image', 'sensor_msgs/msg/CompressedImage'):
                     topic = conn.topic
