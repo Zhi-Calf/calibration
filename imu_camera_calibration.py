@@ -70,30 +70,29 @@ class IMUCameraCalibration:
         
     def load_imu_data(self, imu_file: str) -> Dict:
         """
-        加载IMU数据
-        
-        支持多种格式：CSV、ROS bag等
-        这里假设CSV格式，包含：timestamp, accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z
-        
-        Args:
-            imu_file: IMU数据文件路径
-            
-        Returns:
-            IMU数据字典
+        加载IMU CSV 数据。
+
+        格式要求：第一行为表头，后续每行包含
+          timestamp, accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z
+        timestamp 单位为秒（float64），与图像时间戳对齐。
         """
         try:
-            # 尝试加载CSV格式
             data = np.loadtxt(imu_file, delimiter=',', skiprows=1)
-            
+            if data.ndim == 1:
+                data = data.reshape(1, -1)
+            if data.shape[1] < 7:
+                raise ValueError(f'IMU 数据列数不足: 期望 >=7, 实际 {data.shape[1]}')
+
             imu_data = {
                 'timestamp': data[:, 0],
-                'accel': data[:, 1:4],  # 加速度 (m/s²)
-                'gyro': data[:, 4:7]    # 角速度 (rad/s)
+                'accel': data[:, 1:4],
+                'gyro': data[:, 4:7]
             }
-            
-            print(f'加载IMU数据: {len(imu_data["timestamp"])} 个数据点')
+
+            print(f'加载IMU数据: {len(imu_data["timestamp"])} 个数据点, '
+                  f'时间范围: [{data[0, 0]:.3f}, {data[-1, 0]:.3f}]')
             return imu_data
-            
+
         except Exception as e:
             print(f'加载IMU数据失败: {e}')
             return {}
@@ -170,15 +169,18 @@ class IMUCameraCalibration:
             accel_bias_samples.append(np.mean(static_accel, axis=0))
             gyro_bias_samples.append(np.mean(static_gyro, axis=0))
         
-        # 计算整体平均零偏
-        self.accel_bias = np.mean(accel_bias_samples, axis=0)
+        accel_mean = np.mean(accel_bias_samples, axis=0)
         self.gyro_bias = np.mean(gyro_bias_samples, axis=0)
-        
-        # 加速度计的零偏应该包含重力
-        # 真实的加速度零偏 = 测量值 - 重力
-        # 这里假设IMU在静止时朝上，所以z轴测量的是重力
-        
-        print(f'估计加速度计零偏: {self.accel_bias}')
+
+        accel_norm = np.linalg.norm(accel_mean)
+        if accel_norm < 1e-6:
+            self.accel_bias = accel_mean
+        else:
+            gravity_direction = accel_mean / accel_norm
+            gravity_in_imu = gravity_direction * 9.81
+            self.accel_bias = accel_mean - gravity_in_imu
+
+        print(f'估计加速度计零偏 (去重力): {self.accel_bias}')
         print(f'估计陀螺仪零偏: {self.gyro_bias}')
     
     def detect_apriltag_pose(self, image: np.ndarray) -> Optional[Tuple[np.ndarray, np.ndarray]]:
@@ -317,28 +319,32 @@ class IMUCameraCalibration:
         gravity_imu_list = []
         gravity_camera_list = []
         
+        imu_timestamps = imu_data['timestamp']
+
         for i, image_file in enumerate(tqdm(image_files, desc='处理IMU-相机数据对')):
-            # 加载图像
             img = cv2.imread(image_file)
             if img is None:
                 continue
-            
-            # 检测AprilTag位姿
+
             pose = self.detect_apriltag_pose(img)
             if pose is None:
                 continue
-            
+
             rvec, tvec = pose
-            
-            # 计算对应的IMU数据索引
-            # 假设图像和IMU数据是时间同步的
-            imu_idx = int(i * len(imu_data['timestamp']) / len(image_files))
-            imu_idx = min(imu_idx, len(imu_data['timestamp']) - 1)
-            
-            # 计算重力方向
+
+            image_ts = self._extract_timestamp_from_filename(image_file)
+            if image_ts is not None:
+                imu_idx = int(np.argmin(np.abs(imu_timestamps - image_ts)))
+                if abs(imu_timestamps[imu_idx] - image_ts) > 0.1:
+                    print(f'  帧 {i}: 时间差过大 ({abs(imu_timestamps[imu_idx] - image_ts):.3f}s), 跳过')
+                    continue
+            else:
+                imu_idx = int(i * len(imu_timestamps) / len(image_files))
+                imu_idx = min(imu_idx, len(imu_timestamps) - 1)
+
             gravity_imu = self.compute_gravity_direction_from_imu(imu_data, imu_idx)
             gravity_camera = self.compute_gravity_direction_from_camera(rvec, tvec)
-            
+
             gravity_imu_list.append(gravity_imu)
             gravity_camera_list.append(gravity_camera)
         
@@ -384,36 +390,33 @@ class IMUCameraCalibration:
         
         return self.get_calibration_results()
     
+    @staticmethod
+    def _extract_timestamp_from_filename(filepath: str) -> Optional[float]:
+        """
+        从文件名中提取时间戳（如 1672531200.123.png → 1672531200.123）。
+        如果文件名不包含有效时间戳则返回 None，此时退化到线性索引对齐。
+        """
+        basename = os.path.splitext(os.path.basename(filepath))[0]
+        try:
+            return float(basename)
+        except ValueError:
+            return None
+
     def _compute_rotation_from_vectors(self,
                                       vectors_imu: np.ndarray,
                                       vectors_camera: np.ndarray) -> np.ndarray:
         """
-        从向量对计算旋转矩阵（使用Kabsch算法）
-        
-        Args:
-            vectors_imu: IMU坐标系中的向量 (N, 3)
-            vectors_camera: 相机坐标系中的向量 (N, 3)
-            
-        Returns:
-            旋转矩阵 R_imu_to_cam
+        从方向向量对计算最优旋转矩阵 R 使得 R @ v_imu ≈ v_cam。
+        使用 SVD（Wahba 问题的解法），不做中心化（因为输入是方向，不是点）。
         """
-        # 中心化
-        centroid_imu = np.mean(vectors_imu, axis=0)
-        centroid_camera = np.mean(vectors_camera, axis=0)
-        
-        H = (vectors_imu - centroid_imu).T @ (vectors_camera - centroid_camera)
-        
-        # SVD分解
+        H = vectors_imu.T @ vectors_camera
+
         U, S, Vt = np.linalg.svd(H)
-        
-        # 计算旋转矩阵
-        R = Vt.T @ U.T
-        
-        # 处理反射情况
-        if np.linalg.det(R) < 0:
-            Vt[-1, :] *= -1
-            R = Vt.T @ U.T
-        
+
+        d = np.linalg.det(Vt.T @ U.T)
+        D = np.diag([1.0, 1.0, d])
+        R = Vt.T @ D @ U.T
+
         return R
     
     def _compute_calibration_error(self,

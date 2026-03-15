@@ -32,8 +32,8 @@ sensors:
   # LiDAR配置
   lidar:
     name: "main_lidar"
-    type: "velodyne64"  # 或 velodyne32, ouster等
-    max_range: 120.0  # 最大探测距离（米）
+    type: "rslidar_ruby128"  # 速腾聚创 Ruby 128线
+    max_range: 200.0  # 最大探测距离（米）
     min_range: 0.5   # 最小探测距离（米）
     
   # IMU配置
@@ -55,6 +55,28 @@ multi_camera:
   # 是否进行全局优化
   global_optimization: true
   
+# LiDAR-相机标定参数
+lidar_camera:
+  # 标定板参数（棋盘格，同时被 LiDAR 和相机观测）
+  checkerboard:
+    inner_corners: [9, 6]
+    square_size: 0.02  # 20mm
+  # LiDAR 点云处理参数
+  lidar:
+    voxel_size: 0.01        # 降采样体素大小（米）
+    distance_min: 0.5       # 最近距离过滤（米）
+    distance_max: 15.0      # 最远距离过滤（米）
+  # RANSAC 平面拟合参数
+  plane_fitting:
+    distance_threshold: 0.01  # 平面内点距离阈值（米）
+    ransac_n: 3               # RANSAC 最小采样点数
+    num_iterations: 2000      # RANSAC 迭代次数
+    min_inliers: 50           # 最少内点数
+  # 标定质量
+  calibration:
+    min_pairs: 3              # 最少有效数据对数
+    max_reprojection_error: 5.0  # 最大可接受重投影误差（像素）
+
 # IMU-相机标定参数
 imu_camera:
   # 使用AprilTag进行标定
