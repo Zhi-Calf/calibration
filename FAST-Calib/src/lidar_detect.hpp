@@ -385,72 +385,156 @@ public:
         }
         RCLCPP_INFO(logger_, "Extracted %zu edge points.", edge_cloud_->size());
 
-        pcl::search::KdTree<pcl::PointXYZ>::Ptr tree(new pcl::search::KdTree<pcl::PointXYZ>);
-        tree->setInputCloud(edge_cloud_);
-    
-        std::vector<pcl::PointIndices> cluster_indices;
-        pcl::EuclideanClusterExtraction<pcl::PointXYZ> ec;
-        ec.setClusterTolerance(0.05);
-        ec.setMinClusterSize(50);
-        ec.setMaxClusterSize(1000);
-        ec.setSearchMethod(tree);
-        ec.setInputCloud(edge_cloud_);
-        ec.extract(cluster_indices);
-    
-        RCLCPP_INFO(logger_, "Number of edge clusters: %zu", cluster_indices.size());
-    
-        center_z0_cloud_->reserve(4);
-        Eigen::Matrix3d R_inv = R.inverse();
-    
-        for (size_t i = 0; i < cluster_indices.size(); ++i) 
+        pcl::PointCloud<pcl::PointXYZ>::Ptr xy_cloud(new pcl::PointCloud<pcl::PointXYZ>(*edge_cloud_));
+
         {
-            pcl::PointCloud<pcl::PointXYZ>::Ptr cluster(new pcl::PointCloud<pcl::PointXYZ>);
-            for (const auto& idx : cluster_indices[i].indices) {
-                cluster->push_back(edge_cloud_->points[idx]);
+            pcl::SACSegmentation<pcl::PointXYZ> line_seg;
+            line_seg.setModelType(pcl::SACMODEL_LINE);
+            line_seg.setMethodType(pcl::SAC_RANSAC);
+            line_seg.setDistanceThreshold(0.015);
+            line_seg.setMaxIterations(1000);
+
+            pcl::ModelCoefficients::Ptr line_coeff(new pcl::ModelCoefficients);
+            pcl::PointIndices::Ptr line_inliers(new pcl::PointIndices);
+            pcl::ExtractIndices<pcl::PointXYZ> line_extract;
+
+            int lines_removed = 0;
+            while (xy_cloud->size() > 10) {
+                line_seg.setInputCloud(xy_cloud);
+                line_seg.segment(*line_inliers, *line_coeff);
+                if (line_inliers->indices.empty() || (int)line_inliers->indices.size() < 20)
+                    break;
+                RCLCPP_INFO(logger_, "[Solid] Removing line %d (%zu inliers)",
+                            lines_removed, line_inliers->indices.size());
+                line_extract.setInputCloud(xy_cloud);
+                line_extract.setIndices(line_inliers);
+                line_extract.setNegative(true);
+                pcl::PointCloud<pcl::PointXYZ>::Ptr after(new pcl::PointCloud<pcl::PointXYZ>);
+                line_extract.filter(*after);
+                xy_cloud.swap(after);
+                line_inliers->indices.clear();
+                lines_removed++;
+                if (lines_removed >= 8) break;
             }
-    
-            pcl::ModelCoefficients::Ptr coefficients(new pcl::ModelCoefficients);
-            pcl::PointIndices::Ptr inliers(new pcl::PointIndices);
-            pcl::SACSegmentation<pcl::PointXYZ> seg;
-            seg.setOptimizeCoefficients(true);
-            seg.setModelType(pcl::SACMODEL_CIRCLE2D);
-            seg.setMethodType(pcl::SAC_RANSAC);
-            seg.setDistanceThreshold(0.01);
-            seg.setMaxIterations(1000);
-            seg.setInputCloud(cluster);
-            seg.segment(*inliers, *coefficients);
-    
-            if (inliers->indices.size() > 0) 
+            RCLCPP_INFO(logger_, "[Solid] After removing %d lines: %zu edge pts remain",
+                        lines_removed, xy_cloud->size());
+        }
+
+        pcl::SACSegmentation<pcl::PointXYZ> circle_seg;
+        circle_seg.setModelType(pcl::SACMODEL_CIRCLE2D);
+        circle_seg.setMethodType(pcl::SAC_RANSAC);
+        circle_seg.setDistanceThreshold(0.02);
+        circle_seg.setOptimizeCoefficients(true);
+        circle_seg.setMaxIterations(1000);
+        circle_seg.setRadiusLimits(circle_radius_ - 0.03, circle_radius_ + 0.03);
+
+        pcl::ModelCoefficients::Ptr coefficients(new pcl::ModelCoefficients);
+        pcl::PointIndices::Ptr inliers(new pcl::PointIndices);
+        pcl::ExtractIndices<pcl::PointXYZ> extract2;
+
+        RCLCPP_INFO(logger_, "[Solid] Iterative RANSAC circle detection (r=%.3f +/- 0.03), %zu edge pts",
+                    circle_radius_, xy_cloud->size());
+
+        while (xy_cloud->points.size() > 3)
+        {
+            circle_seg.setInputCloud(xy_cloud);
+            circle_seg.segment(*inliers, *coefficients);
+
+            if (inliers->indices.empty()) {
+                RCLCPP_INFO(logger_, "[Solid] No more circles found, stop.");
+                break;
+            }
+            if ((int)inliers->indices.size() < 5) {
+                RCLCPP_INFO(logger_, "[Solid] Circle inliers too few (%zu < 5), stop.", inliers->indices.size());
+                break;
+            }
+
+            RCLCPP_INFO(logger_, "[Solid] Found circle: center=(%.3f, %.3f), r=%.3f, inliers=%zu",
+                        coefficients->values[0], coefficients->values[1],
+                        coefficients->values[2], inliers->indices.size());
+
+            pcl::PointXYZ center_point;
+            center_point.x = coefficients->values[0];
+            center_point.y = coefficients->values[1];
+            center_point.z = 0;
+            center_z0_cloud_->push_back(center_point);
+
+            extract2.setInputCloud(xy_cloud);
+            extract2.setIndices(inliers);
+            extract2.setNegative(true);
+            pcl::PointCloud<pcl::PointXYZ>::Ptr remaining(new pcl::PointCloud<pcl::PointXYZ>);
+            extract2.filter(*remaining);
+            xy_cloud.swap(remaining);
+
+            inliers->indices.clear();
+        }
+
+        RCLCPP_INFO(logger_, "[Solid] Found %zu circle candidates total.", center_z0_cloud_->size());
+
+        std::vector<std::vector<int>> groups;
+        comb(center_z0_cloud_->size(), TARGET_NUM_CIRCLES, groups);
+        std::vector<double> groups_scores(groups.size());
+        for (size_t i = 0; i < groups.size(); ++i)
+        {
+            std::vector<pcl::PointXYZ> candidates;
+            for (size_t j = 0; j < groups[i].size(); ++j)
             {
-                double error = 0.0;
-                for (const auto& idx : inliers->indices) 
-                {
-                    double dx = cluster->points[idx].x - coefficients->values[0];
-                    double dy = cluster->points[idx].y - coefficients->values[1];
-                    double distance = sqrt(dx * dx + dy * dy) - circle_radius_;
-                    error += abs(distance);
-                }
-                error /= inliers->indices.size();
-    
-                if (error < 0.025) 
-                {
-                    pcl::PointXYZ center_point;
-                    center_point.x = coefficients->values[0];
-                    center_point.y = coefficients->values[1];
-                    center_point.z = 0.0;
-                    center_z0_cloud_->push_back(center_point);
+                pcl::PointXYZ center;
+                center.x = center_z0_cloud_->at(groups[i][j]).x;
+                center.y = center_z0_cloud_->at(groups[i][j]).y;
+                center.z = center_z0_cloud_->at(groups[i][j]).z;
+                candidates.push_back(center);
+            }
+            Square square_candidate(candidates, delta_width_circles_, delta_height_circles_);
+            groups_scores[i] = square_candidate.is_valid() ? 1.0 : -1;
+        }
 
-                    Eigen::Vector3d aligned_point(center_point.x, center_point.y, center_point.z + average_z);
-                    Eigen::Vector3d original_point = R_inv * aligned_point;
-
-                    pcl::PointXYZ center_point_origin;
-                    center_point_origin.x = original_point.x();
-                    center_point_origin.y = original_point.y();
-                    center_point_origin.z = original_point.z();
-                    center_cloud->points.push_back(center_point_origin);
-                }
+        int best_candidate_idx = -1;
+        double best_candidate_score = -1;
+        for (size_t i = 0; i < groups.size(); ++i)
+        {
+            if (best_candidate_score == 1 && groups_scores[i] == 1)
+            {
+                RCLCPP_ERROR(logger_,
+                    "[Solid] More than one set of candidates fit target's geometry.");
+                return;
+            }
+            if (groups_scores[i] > best_candidate_score)
+            {
+                best_candidate_score = groups_scores[i];
+                best_candidate_idx = i;
             }
         }
+        if (best_candidate_idx == -1)
+        {
+            RCLCPP_WARN(logger_,
+                "[Solid] Unable to find a candidate set that matches target's geometry");
+            return;
+        }
+
+        Eigen::Matrix3d R_inv = R.inverse();
+        for (size_t j = 0; j < groups[best_candidate_idx].size(); ++j)
+        {
+            pcl::PointXYZ center;
+            center.x = center_z0_cloud_->at(groups[best_candidate_idx][j]).x;
+            center.y = center_z0_cloud_->at(groups[best_candidate_idx][j]).y;
+            center.z = center_z0_cloud_->at(groups[best_candidate_idx][j]).z;
+
+            Eigen::Vector3d aligned_point(center.x, center.y, center.z + average_z);
+            Eigen::Vector3d original_point = R_inv * aligned_point;
+
+            pcl::PointXYZ center_point_origin;
+            center_point_origin.x = original_point.x();
+            center_point_origin.y = original_point.y();
+            center_point_origin.z = original_point.z();
+            center_cloud->points.push_back(center_point_origin);
+        }
+    }
+
+    void setFilterBounds(double xmin, double xmax, double ymin, double ymax, double zmin, double zmax) {
+        x_min_ = xmin; x_max_ = xmax;
+        y_min_ = ymin; y_max_ = ymax;
+        z_min_ = zmin; z_max_ = zmax;
     }
 
     pcl::PointCloud<Common::Point>::Ptr getFilteredCloud() const { return filtered_cloud_; }

@@ -59,6 +59,9 @@ struct Params {
   double marker_size, delta_width_qr_center, delta_height_qr_center;
   double delta_width_circles, delta_height_circles, circle_radius;
   int min_detected_markers;
+  bool use_point_pick;
+  int pick_num_points;
+  double pick_padding;
   string image_path;
   string bag_path;
   string lidar_topic;
@@ -99,6 +102,9 @@ inline Params loadParameters(rclcpp::Node::SharedPtr node) {
   declare("y_max", 2.0);
   declare("z_min", -0.5);
   declare("z_max", 2.0);
+  declare("use_point_pick", false);
+  declare("pick_num_points", 4);
+  declare("pick_padding", 0.3);
 
   node->get_parameter("fx", params.fx);
   node->get_parameter("fy", params.fy);
@@ -126,6 +132,9 @@ inline Params loadParameters(rclcpp::Node::SharedPtr node) {
   node->get_parameter("y_max", params.y_max);
   node->get_parameter("z_min", params.z_min);
   node->get_parameter("z_max", params.z_max);
+  node->get_parameter("use_point_pick", params.use_point_pick);
+  node->get_parameter("pick_num_points", params.pick_num_points);
+  node->get_parameter("pick_padding", params.pick_padding);
 
   return params;
 }
@@ -351,9 +360,9 @@ inline void sortPatternCenters(pcl::PointCloud<pcl::PointXYZ>::Ptr pc,
   if (axis_mode == "lidar") {
     for (const auto& p : *pc) {
       pcl::PointXYZ pt;
-      pt.x = -p.y;
+      pt.x = p.x;
       pt.y = -p.z;
-      pt.z = p.x;
+      pt.z = p.y;
       work_pc->push_back(pt);
     }
   } else {
@@ -389,8 +398,8 @@ inline void sortPatternCenters(pcl::PointCloud<pcl::PointXYZ>::Ptr pc,
 
   if (axis_mode == "lidar") {
     for (auto& point : v->points) {
-      float x_new = point.z;
-      float y_new = -point.x;
+      float x_new = point.x;
+      float y_new = point.z;
       float z_new = -point.y;
       point.x = x_new;
       point.y = y_new;

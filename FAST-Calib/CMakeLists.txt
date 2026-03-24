@@ -39,7 +39,12 @@ endif()
 
 add_executable(fast_calib src/main.cpp)
 ament_target_dependencies(fast_calib ${DEPENDENCIES})
-target_link_libraries(fast_calib ${PCL_LIBRARIES} ${OpenCV_LIBRARIES})
+find_library(OPENCV_ARUCO_LIB opencv_aruco PATHS /usr/local/lib NO_DEFAULT_PATH)
+if(NOT OPENCV_ARUCO_LIB)
+  find_library(OPENCV_ARUCO_LIB opencv_aruco)
+endif()
+
+target_link_libraries(fast_calib ${PCL_LIBRARIES} ${OpenCV_LIBRARIES} ${OPENCV_ARUCO_LIB})
 
 add_executable(multi_fast_calib src/multi_scene.cpp)
 ament_target_dependencies(multi_fast_calib ${DEPENDENCIES})

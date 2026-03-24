@@ -8,6 +8,7 @@ which is included as part of this source code package.
 #include "qr_detect.hpp"
 #include "lidar_detect.hpp"
 #include "data_preprocess.hpp"
+#include <geometry_msgs/msg/point_stamped.hpp>
 
 int main(int argc, char **argv) 
 {
@@ -37,6 +38,74 @@ int main(int argc, char **argv)
         RCLCPP_ERROR(node->get_logger(), "No point cloud loaded. Exiting.");
         rclcpp::shutdown();
         return 1;
+    }
+
+    if (params.use_point_pick) {
+        auto raw_pub = node->create_publisher<sensor_msgs::msg::PointCloud2>("raw_cloud", 1);
+
+        pcl::PointCloud<Common::Point>::Ptr near_cloud(new pcl::PointCloud<Common::Point>);
+        const float max_range = 5.0f;
+        for (const auto& pt : *cloud_input) {
+            float dist = std::sqrt(pt.x * pt.x + pt.y * pt.y + pt.z * pt.z);
+            if (dist <= max_range) near_cloud->push_back(pt);
+        }
+
+        pcl::PointCloud<Common::Point>::Ptr display_cloud(new pcl::PointCloud<Common::Point>);
+        pcl::VoxelGrid<Common::Point> voxel;
+        voxel.setInputCloud(near_cloud);
+        voxel.setLeafSize(0.01f, 0.01f, 0.01f);
+        voxel.filter(*display_cloud);
+        RCLCPP_INFO(node->get_logger(), "Display cloud: %zu -> %zu (5m) -> %zu (voxel)",
+                    cloud_input->size(), near_cloud->size(), display_cloud->size());
+
+        sensor_msgs::msg::PointCloud2 raw_msg;
+        pcl::toROSMsg(*display_cloud, raw_msg);
+        raw_msg.header.frame_id = "map";
+
+        const double half_w = params.delta_width_circles / 2.0 + params.circle_radius;
+        const double half_h = params.delta_height_circles / 2.0 + params.circle_radius;
+        const double expand = std::max(half_w, half_h) + params.pick_padding;
+        std::atomic<bool> pick_done{false};
+
+        auto sub = node->create_subscription<geometry_msgs::msg::PointStamped>(
+            "/clicked_point", 10,
+            [&](const geometry_msgs::msg::PointStamped::SharedPtr msg) {
+                if (pick_done.load()) return;
+                const auto& p = msg->point;
+                RCLCPP_INFO(node->get_logger(),
+                    "Clicked at (%.3f, %.3f, %.3f), expand=%.2f",
+                    p.x, p.y, p.z, expand);
+
+                lidarDetectPtr->setFilterBounds(
+                    p.x - expand, p.x + expand,
+                    p.y - expand, p.y + expand,
+                    p.z - expand, p.z + expand);
+                RCLCPP_INFO(node->get_logger(),
+                    "Filter bounds: x=[%.2f, %.2f] y=[%.2f, %.2f] z=[%.2f, %.2f]",
+                    p.x - expand, p.x + expand,
+                    p.y - expand, p.y + expand,
+                    p.z - expand, p.z + expand);
+                pick_done.store(true);
+            });
+
+        RCLCPP_INFO(node->get_logger(),
+            "Click once on the calibration board in RViz2 "
+            "(use 'Publish Point' tool). ROI will auto-expand by %.2fm.", expand);
+
+        rclcpp::WallRate pick_rate(1);
+        while (rclcpp::ok() && !pick_done.load()) {
+            raw_msg.header.stamp = node->now();
+            raw_pub->publish(raw_msg);
+            rclcpp::spin_some(node);
+            pick_rate.sleep();
+        }
+
+        sub.reset();
+
+        if (!rclcpp::ok()) {
+            rclcpp::shutdown();
+            return 0;
+        }
     }
 
     PointCloud<PointXYZ>::Ptr qr_center_cloud(new PointCloud<PointXYZ>);

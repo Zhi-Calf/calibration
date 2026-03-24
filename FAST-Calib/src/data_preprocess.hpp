@@ -17,6 +17,7 @@ which is included as part of this source code package.
 #include <rclcpp/serialization.hpp>
 #include <rosbag2_cpp/reader.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/compressed_image.hpp>
 #include <cv_bridge/cv_bridge.h>
