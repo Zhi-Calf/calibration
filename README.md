@@ -50,9 +50,13 @@ calibration/
 ├── test_camera_calibration.py     # 单相机标定测试
 ├── generate_high_res_patterns.py  # 高分辨率标定板生成
 ├── download_calibration_patterns.py # 在线标定板下载
-├── FAST-Calib/                   # LiDAR-相机精标定（ROS2 + 二维码/棋盘格，可选）
-│   ├── launch/calib.launch.py    # 单场景启动
-│   ├── config/qr_params.yaml      # bag 路径、图像/点云 topic
+├── FAST-Calib/                   # LiDAR-相机精标定（ROS2 + 二维码圆孔标定板）
+│   ├── launch/calib.launch.py    # 单场景启动（含 RViz2）
+│   ├── config/qr_params.yaml     # bag 路径、topic、点选参数
+│   ├── rviz_cfg/fast_livo2.rviz  # RViz2 配置（ROS2 插件名）
+│   ├── src/main.cpp              # 主流程（含 RViz2 单击点选 ROI）
+│   ├── src/lidar_detect.hpp      # LiDAR 检测（直线剔除 + 迭代 RANSAC 圆拟合）
+│   ├── include/common_lib.h      # 参数、排序、几何验证
 │   └── scripts/distance_filter_tool.py  # 点云距离过滤（支持 rosbag2）
 └── data/                          # 数据与结果目录
     ├── camera_images/{front,front_left,...}/
@@ -160,9 +164,75 @@ python download_calibration_patterns.py
 - `.yaml` 文件：完整标定参数
 - `*_report.txt`：可读标定报告
 
+## FAST-Calib 使用说明
+
+FAST-Calib 用于 LiDAR-相机精标定，基于圆孔标定板上的 4 个 ArUco 二维码和 4 个圆孔。
+
+### 编译
+
+需要 ROS 2 Humble、PCL、OpenCV（含 aruco 模块）。若系统默认编译器为 clang，需指定 GCC：
+
+```bash
+source /opt/ros/humble/setup.bash
+CXX=/usr/bin/g++-9 CC=/usr/bin/gcc-9 colcon build --packages-select fast_calib
+```
+
+### 配置
+
+编辑 `FAST-Calib/config/qr_params.yaml`：
+
+| 参数 | 说明 |
+|------|------|
+| `bag_path` | ROS 2 bag 目录路径 |
+| `lidar_topic` | 点云 topic（如 `/right/rslidar_points`） |
+| `image_topic` | 图像 topic（如 `/cam3/image_raw`） |
+| `circle_radius` | 标定板圆孔半径（m） |
+| `delta_width_circles` | 圆心水平间距（m） |
+| `delta_height_circles` | 圆心垂直间距（m） |
+| `use_point_pick` | 是否启用 RViz2 点选模式 |
+| `pick_padding` | 点选后 ROI 额外扩展量（m） |
+
+### 运行
+
+```bash
+source install/setup.bash
+ros2 launch fast_calib calib.launch.py
+```
+
+**点选模式**（`use_point_pick: true`）：
+1. 节点加载 rosbag 点云，预过滤为 5m 半径 + 体素下采样后发布到 RViz2
+2. 在 RViz2 中选择 **Publish Point** 工具，单击标定板上任意位置
+3. 系统根据标定板尺寸自动计算 ROI 并继续标定流程
+
+### 检测流程（Solid LiDAR）
+
+1. PassThrough 过滤 → 体素下采样 → RANSAC 平面分割
+2. 边界估计提取边缘点
+3. **迭代 RANSAC 直线拟合**剔除标定板矩形边界
+4. **迭代 RANSAC 圆拟合**（半径约束 ±0.03m）检测圆孔
+5. 几何验证（圆心构成矩形，边长匹配 `delta_width/height_circles`）
+6. SVD 求解 LiDAR→Camera 刚体变换
+
+### 坐标系约定
+
+| 传感器 | X | Y | Z |
+|--------|---|---|---|
+| 速腾聚创 LiDAR | 右 | 前 | 上 |
+| 相机（OpenCV） | 右 | 下 | 前 |
+
+`sortPatternCenters` 函数在排序 LiDAR 圆心时，使用上述坐标系映射确保与相机侧的排序一致。
+
+### 输出
+
+标定结果保存在 `output_path` 目录下：
+- `single_calib_result.txt`：外参矩阵 `T_cam_lidar`（Rcl, Pcl）及相机内参
+- `circle_center_record.txt`：LiDAR 和相机侧的圆心坐标
+- `colored_cloud.pcd`：用标定结果投影上色的点云（相机坐标系）
+- `qr_detect.png`：二维码检测结果图
+
 ## 参考
 
 - Zhang, Z. (2000). "A flexible new technique for camera calibration"
 - Olson, E. (2011). "AprilTag: A robust and flexible visual fiducial system"
-- **FAST-Calib**：https://github.com/hku-mars/FAST-Calib — 本仓库内 `FAST-Calib/` 为 ROS2 移植版，支持从 rosbag2 读图与点云，用于 LiDAR-相机精标定（二维码或棋盘格）。
+- **FAST-Calib**：https://github.com/hku-mars/FAST-Calib — 本仓库内 `FAST-Calib/` 为 ROS2 移植版，支持 RViz2 点选 ROI、改进的圆孔检测算法、速腾聚创 LiDAR 坐标系适配。
 - **rosbags**：Python 读写 ROS1/ROS2 bag，本流程使用其 Highlevel API（AnyReader）解析 rosbag2。
