@@ -23,6 +23,7 @@ which is included as part of this source code package.
 #include <cv_bridge/cv_bridge.h>
 #include <fstream>
 #include <filesystem>
+#include <vector>
 #include "common_lib.h"
 
 using namespace std;
@@ -40,6 +41,17 @@ public:
     cv::Mat img_input_;
     LiDARType lidar_type_{LiDARType::Unknown};
     LiDARType lidarType() const { return lidar_type_; }
+    size_t imageCount() const { return images_.size(); }
+    size_t currentImageIndex() const { return current_image_idx_; }
+    bool setImageByIndex(size_t idx) {
+        if (idx >= images_.size()) return false;
+        current_image_idx_ = idx;
+        img_input_ = images_[idx].clone();
+        return !img_input_.empty();
+    }
+    bool advanceImage() {
+        return setImageByIndex(current_image_idx_ + 1);
+    }
 
     DataPreprocess(Params &params, rclcpp::Logger logger = rclcpp::get_logger("data_preprocess"))
         : cloud_input_(new pcl::PointCloud<Common::Point>),
@@ -75,8 +87,6 @@ public:
         rclcpp::Serialization<sensor_msgs::msg::PointCloud2> pc2_serializer;
         rclcpp::Serialization<sensor_msgs::msg::Image> img_serializer;
         rclcpp::Serialization<sensor_msgs::msg::CompressedImage> cimg_serializer;
-
-        bool got_image = false;
 
         while (reader.has_next())
         {
@@ -130,7 +140,7 @@ public:
             }
 
             // Image (uncompressed)
-            if (!got_image && topic == image_topic)
+            if (topic == image_topic)
             {
                 auto img_msg = std::make_shared<sensor_msgs::msg::Image>();
                 rclcpp::SerializedMessage serialized(*msg->serialized_data);
@@ -138,10 +148,9 @@ public:
 
                 try {
                     auto cv_ptr = cv_bridge::toCvCopy(*img_msg, "bgr8");
-                    img_input_ = cv_ptr->image;
-                    got_image = true;
-                    RCLCPP_INFO(logger_, "Loaded image from bag topic: %s (%dx%d)",
-                                image_topic.c_str(), img_input_.cols, img_input_.rows);
+                    if (!cv_ptr->image.empty()) {
+                        images_.push_back(cv_ptr->image.clone());
+                    }
                 } catch (const cv_bridge::Exception &e) {
                     RCLCPP_WARN(logger_, "cv_bridge error on topic %s: %s", image_topic.c_str(), e.what());
                 }
@@ -149,18 +158,16 @@ public:
             }
 
             // CompressedImage
-            if (!got_image && (topic == image_topic + "/compressed" || topic == image_topic))
+            if (topic == image_topic + "/compressed")
             {
                 try {
                     auto cimg_msg = std::make_shared<sensor_msgs::msg::CompressedImage>();
                     rclcpp::SerializedMessage serialized(*msg->serialized_data);
                     cimg_serializer.deserialize_message(&serialized, cimg_msg.get());
 
-                    img_input_ = cv::imdecode(cv::Mat(cimg_msg->data), cv::IMREAD_COLOR);
-                    if (!img_input_.empty()) {
-                        got_image = true;
-                        RCLCPP_INFO(logger_, "Loaded compressed image from bag (%dx%d)",
-                                    img_input_.cols, img_input_.rows);
+                    cv::Mat decoded = cv::imdecode(cv::Mat(cimg_msg->data), cv::IMREAD_COLOR);
+                    if (!decoded.empty()) {
+                        images_.push_back(decoded);
                     }
                 } catch (...) {
                     // Not a CompressedImage, skip
@@ -171,8 +178,13 @@ public:
 
         RCLCPP_INFO(logger_, "Loaded %zu points from the rosbag.", cloud_input_->size());
 
-        // Fallback: load image from file if not found in bag
-        if (!got_image) {
+        if (!images_.empty()) {
+            current_image_idx_ = 0;
+            img_input_ = images_[0].clone();
+            RCLCPP_INFO(logger_, "Loaded %zu images from bag topic: %s (using frame 0: %dx%d)",
+                        images_.size(), image_topic.c_str(), img_input_.cols, img_input_.rows);
+        } else {
+            // Fallback: load image from file if not found in bag
             if (!image_path.empty()) {
                 img_input_ = cv::imread(image_path, cv::IMREAD_UNCHANGED);
                 if (img_input_.empty()) {
@@ -190,6 +202,8 @@ public:
 
 private:
     rclcpp::Logger logger_;
+    std::vector<cv::Mat> images_;
+    size_t current_image_idx_{0};
 };
 
 typedef std::shared_ptr<DataPreprocess> DataPreprocessPtr;

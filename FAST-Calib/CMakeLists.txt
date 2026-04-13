@@ -58,7 +58,10 @@ install(DIRECTORY launch config rviz_cfg
   DESTINATION share/${PROJECT_NAME}
 )
 
-install(PROGRAMS scripts/distance_filter_tool.py
+install(PROGRAMS
+  scripts/distance_filter_tool.py
+  scripts/vlm_pick_points_template.py
+  scripts/extract_bag_image.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

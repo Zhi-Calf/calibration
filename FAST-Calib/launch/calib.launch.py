@@ -9,10 +9,16 @@ from ament_index_python.packages import get_package_share_directory
 
 def generate_launch_description():
     pkg_share = get_package_share_directory('fast_calib')
-    config = os.path.join(pkg_share, 'config', 'qr_params.yaml')
+    default_config = os.path.join(pkg_share, 'config', 'qr_params.yaml')
+    params_file = LaunchConfiguration('params_file')
     rviz_config = os.path.join(pkg_share, 'rviz_cfg', 'fast_livo2.rviz')
 
     return LaunchDescription([
+        DeclareLaunchArgument(
+            'params_file',
+            default_value=default_config,
+            description='Path to yaml parameter file',
+        ),
         DeclareLaunchArgument('rviz', default_value='true',
                               description='Launch RViz2'),
 
@@ -20,7 +26,7 @@ def generate_launch_description():
             package='fast_calib',
             executable='fast_calib',
             name='fast_calib',
-            parameters=[config],
+            parameters=[params_file],
             output='screen',
         ),
 

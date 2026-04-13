@@ -3,3 +3,33 @@ install/
 log/
 *.pyc
 __pycache__/
+# calibration data / artifacts
+data/rosbag/
+data/output/
+data/*.zip
+internal_calibration/__pycache__
+internal_calibration\exported_images
+internal_calibration
+internal_calibration\output
+internal_calibration\output_cam_chess_2026_04_11
+internal_calibration\output_cam_chess_2026_04_11_2
+internal_calibration\output_cam_fisheye_2026_04_11
+internal_calibration\output_cam_fisheye_2026_04_12
+internal_calibration\output_fixed
+models/
+*.pth
+*.pcd
+*.bag
+*.db3
+*.bak
+.vscode/
+tmp_ct/
+# user local calibration data (do not upload)
+data/
+internal_calibration/output/debug/
+internal_calibration/exported_images/
+internal_calibration/output_cam_chess_2026_04_11/
+internal_calibration/output_cam_chess_2026_04_11_2/
+internal_calibration/output_cam_fisheye_2026_04_11/
+internal_calibration/output_cam_fisheye_2026_04_12/
+internal_calibration/output_fixed/

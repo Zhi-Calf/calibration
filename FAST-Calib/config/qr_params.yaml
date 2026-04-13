@@ -1,81 +1,51 @@
-# FAST-Calib ROS 2 configuration
-# Note: $(find ...) is not supported in ROS 2 YAML — use absolute paths.
-
 fast_calib:
   ros__parameters:
-    # Camera intrinsics (Ruby 128 + your camera)
-    fx: 2478.48702288166
-    fy: 2478.58544825456
-    cx: 1230.99707596681
-    cy: 1025.66149498072
-    k1: -0.0493178189623200
-    k2: 0.147394487986097
-    p1: -0.00127118592043482
-    p2: -0.00200379689523022
+    # Camera intrinsics (cam3)
+    fx: 1476.4569562447177
+    fy: 1558.111136518117
+    cx: 751.2242106723367
+    cy: 509.6227667391199
+    k1: -0.8812195820589294
+    k2: -0.2076906891873392
+    p1: 0.01717465957330068
+    p2: 0.10596283129815083
 
-    # Calibration target parameters
+    # Target / detection
     marker_size: 0.20
+    min_detected_markers: 1
     delta_width_qr_center: 0.55
     delta_height_qr_center: 0.35
     delta_width_circles: 0.5
     delta_height_circles: 0.4
-    circle_radius: 0.12
+    circle_radius: 0.14
+    board_ids: [10, 9, 5, 6]
+    target_mode: "apriltag_grid"
+    tag_dictionary: "aruco_6x6_250"
+    use_image_pick: true
+    use_vlm_auto_pick: false
 
-    # Distance filter (used when use_point_pick is false, or as fallback)
-    x_min: 2.0
-    x_max: 5.0
-    y_min: -1.0
-    y_max: 4.0
-    z_min: 0.0
-    z_max: 2.0
+    # ROI fallback (adjust per scene if needed)
+    x_min: -1.0
+    x_max: -0.2
+    y_min: -1.85
+    y_max: -0.7
+    z_min: -0.1
+    z_max: 0.9
 
-    # Point pick mode: click on calibration board in RViz2 to set filter bounds
+    # Picking
     use_point_pick: true
+    max_rounds: 1
+    max_rmse_accept: 0.30
+    max_translation_jump_m: 0.50
+    max_rotation_jump_deg: 20.0
     pick_num_points: 4
-    pick_padding: 0.3
+    pick_padding: 0.05
 
-    # Input — ROS 2 bag directory path (not a .bag file)
-    # Topics: /right/rslidar_points or /left/rslidar_points, /cam0~3/image_raw
+    # Input
     lidar_topic: "/right/rslidar_points"
     image_topic: "/cam3/image_raw"
-    bag_path: "/media/cindy/nian/rosbag2_2026_03_14-14_40_11"
+    bag_path: "/mnt/f/AI/calibration/data/rosbag2_2026_03_14-14_36_51_cam3"
     image_path: ""
 
     # Output
-    output_path: "/media/cindy/nian/calib_data/output"
-
-# For multi_fast_calib node (same params, different node name)
-multi_fast_calib:
-  ros__parameters:
-    fx: 2478.48702288166
-    fy: 2478.58544825456
-    cx: 1230.99707596681
-    cy: 1025.66149498072
-    k1: -0.0493178189623200
-    k2: 0.147394487986097
-    p1: -0.00127118592043482
-    p2: -0.00200379689523022
-
-    marker_size: 0.20
-    delta_width_qr_center: 0.55
-    delta_height_qr_center: 0.35
-    delta_width_circles: 0.5
-    delta_height_circles: 0.4
-    circle_radius: 0.12
-
-    x_min: 2.0
-    x_max: 5.0
-    y_min: -1.0
-    y_max: 4.0
-    z_min: 0.0
-    z_max: 2.0
-
-    use_point_pick: false
-    pick_num_points: 4
-    pick_padding: 0.3
-
-    lidar_topic: "/right/rslidar_points"
-    image_topic: "/cam3/image_raw"
-    bag_path: ""
-    image_path: ""
-    output_path: "/media/cindy/nian/calib_data/output"
+    output_path: "/mnt/f/AI/calibration/data/output/cam3_external"

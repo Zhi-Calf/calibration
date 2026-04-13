@@ -26,6 +26,9 @@ which is included as part of this source code package.
 #include <pcl/segmentation/extract_clusters.h>
 #include <pcl/registration/transformation_estimation_svd.h>
 #include <cmath>
+#include <cctype>
+#include <algorithm>
+#include <filesystem>
 #include <opencv2/opencv.hpp>
 #include "color.h"
 
@@ -35,7 +38,7 @@ using namespace pcl;
 
 #define TARGET_NUM_CIRCLES 4
 #define DEBUG 1
-#define GEOMETRY_TOLERANCE 0.08
+#define GEOMETRY_TOLERANCE 0.20
 
 namespace Common 
 {
@@ -56,10 +59,23 @@ POINT_CLOUD_REGISTER_POINT_STRUCT(Common::Point,
 struct Params {
   double x_min, x_max, y_min, y_max, z_min, z_max;
   double fx, fy, cx, cy, k1, k2, p1, p2;
+  std::string camera_model;
   double marker_size, delta_width_qr_center, delta_height_qr_center;
   double delta_width_circles, delta_height_circles, circle_radius;
   int min_detected_markers;
+  std::vector<int64_t> board_ids;
+  std::string target_mode;
+  std::string tag_dictionary;
+  bool use_image_pick;
+  bool use_vlm_auto_pick;
+  std::string vlm_points_file;
+  bool use_lidar_auto_pick;
+  std::string lidar_points_file;
   bool use_point_pick;
+  int max_rounds;
+  double max_rmse_accept;
+  double max_translation_jump_m;
+  double max_rotation_jump_deg;
   int pick_num_points;
   double pick_padding;
   string image_path;
@@ -84,12 +100,21 @@ inline Params loadParameters(rclcpp::Node::SharedPtr node) {
   declare("k2", 0.10996870793601);
   declare("p1", 0.000157303079833973);
   declare("p2", 0.000544930726278493);
+  declare("camera_model", std::string("pinhole"));
   declare("marker_size", 0.2);
   declare("delta_width_qr_center", 0.55);
   declare("delta_height_qr_center", 0.35);
   declare("delta_width_circles", 0.5);
   declare("delta_height_circles", 0.4);
   declare("min_detected_markers", 3);
+  declare("board_ids", std::vector<int64_t>{1, 2, 4, 3});
+  declare("target_mode", std::string("circle_hole"));
+  declare("tag_dictionary", std::string("aruco_6x6_250"));
+  declare("use_image_pick", false);
+  declare("use_vlm_auto_pick", false);
+  declare("vlm_points_file", std::string(""));
+  declare("use_lidar_auto_pick", false);
+  declare("lidar_points_file", std::string(""));
   declare("circle_radius", 0.12);
   declare("image_path", std::string(""));
   declare("bag_path", std::string(""));
@@ -103,6 +128,10 @@ inline Params loadParameters(rclcpp::Node::SharedPtr node) {
   declare("z_min", -0.5);
   declare("z_max", 2.0);
   declare("use_point_pick", false);
+  declare("max_rounds", 1);
+  declare("max_rmse_accept", 0.18);
+  declare("max_translation_jump_m", 0.50);
+  declare("max_rotation_jump_deg", 20.0);
   declare("pick_num_points", 4);
   declare("pick_padding", 0.3);
 
@@ -114,12 +143,21 @@ inline Params loadParameters(rclcpp::Node::SharedPtr node) {
   node->get_parameter("k2", params.k2);
   node->get_parameter("p1", params.p1);
   node->get_parameter("p2", params.p2);
+  node->get_parameter("camera_model", params.camera_model);
   node->get_parameter("marker_size", params.marker_size);
   node->get_parameter("delta_width_qr_center", params.delta_width_qr_center);
   node->get_parameter("delta_height_qr_center", params.delta_height_qr_center);
   node->get_parameter("delta_width_circles", params.delta_width_circles);
   node->get_parameter("delta_height_circles", params.delta_height_circles);
   node->get_parameter("min_detected_markers", params.min_detected_markers);
+  node->get_parameter("board_ids", params.board_ids);
+  node->get_parameter("target_mode", params.target_mode);
+  node->get_parameter("tag_dictionary", params.tag_dictionary);
+  node->get_parameter("use_image_pick", params.use_image_pick);
+  node->get_parameter("use_vlm_auto_pick", params.use_vlm_auto_pick);
+  node->get_parameter("vlm_points_file", params.vlm_points_file);
+  node->get_parameter("use_lidar_auto_pick", params.use_lidar_auto_pick);
+  node->get_parameter("lidar_points_file", params.lidar_points_file);
   node->get_parameter("circle_radius", params.circle_radius);
   node->get_parameter("image_path", params.image_path);
   node->get_parameter("bag_path", params.bag_path);
@@ -133,10 +171,21 @@ inline Params loadParameters(rclcpp::Node::SharedPtr node) {
   node->get_parameter("z_min", params.z_min);
   node->get_parameter("z_max", params.z_max);
   node->get_parameter("use_point_pick", params.use_point_pick);
+  node->get_parameter("max_rounds", params.max_rounds);
+  node->get_parameter("max_rmse_accept", params.max_rmse_accept);
+  node->get_parameter("max_translation_jump_m", params.max_translation_jump_m);
+  node->get_parameter("max_rotation_jump_deg", params.max_rotation_jump_deg);
   node->get_parameter("pick_num_points", params.pick_num_points);
   node->get_parameter("pick_padding", params.pick_padding);
 
   return params;
+}
+
+inline bool isFisheyeModel(const std::string &camera_model)
+{
+  std::string m = camera_model;
+  std::transform(m.begin(), m.end(), m.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  return m == "fisheye";
 }
 
 inline double computeRMSE(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud1, 
@@ -210,13 +259,18 @@ inline void projectPointCloudToImage(const pcl::PointCloud<Common::Point>::Ptr& 
   const cv::Mat& cameraMatrix,
   const cv::Mat& distCoeffs,
   const cv::Mat& image,
-  pcl::PointCloud<pcl::PointXYZRGB>::Ptr& colored_cloud) 
+  pcl::PointCloud<pcl::PointXYZRGB>::Ptr& colored_cloud,
+  const std::string& camera_model = "pinhole")
 {
   colored_cloud->clear();
   colored_cloud->reserve(cloud->size());
 
   cv::Mat undistortedImage;
-  cv::undistort(image, undistortedImage, cameraMatrix, distCoeffs);
+  if (isFisheyeModel(camera_model)) {
+    cv::fisheye::undistortImage(image, undistortedImage, cameraMatrix, distCoeffs, cameraMatrix);
+  } else {
+    cv::undistort(image, undistortedImage, cameraMatrix, distCoeffs);
+  }
 
   cv::Mat rvec = cv::Mat::zeros(3, 1, CV_32F);
   cv::Mat tvec = cv::Mat::zeros(3, 1, CV_32F);
@@ -300,12 +354,13 @@ inline void saveCalibrationResults(const Params& params, const Eigen::Matrix4f& 
   }
   std::string outputDir = params.output_path;
   if (outputDir.back() != '/') outputDir += '/';
+  std::filesystem::create_directories(outputDir);
 
   std::ofstream outFile(outputDir + "single_calib_result.txt");
   if (outFile.is_open()) 
   {
     outFile << "# FAST-LIVO2 calibration format\n";
-    outFile << "cam_model: Pinhole\n";
+    outFile << "cam_model: " << (isFisheyeModel(params.camera_model) ? "Fisheye" : "Pinhole") << "\n";
     outFile << "cam_width: " << img_input.cols << "\n";
     outFile << "cam_height: " << img_input.rows << "\n";
     outFile << "scale: 1.0\n";
@@ -493,3 +548,7 @@ class Square
 };
 
 #endif
+
+
+
+
